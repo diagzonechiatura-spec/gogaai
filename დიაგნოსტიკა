@@ -1,0 +1,311 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { Bot, Car, Cpu, BookOpen, Upload, Wrench, Key, Database, Gauge, Settings, Send, Trash2, CircuitBoard, Lock, Zap, FileText, Search, Sparkles, Info, PlusCircle, CloudUpload, CheckCircle2, XCircle, Shield, HelpCircle, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { toast } from "sonner";
+
+// ---------------------------------------------
+// GogaAI — Mechanic Assistant MVP (client-side only)
+// ---------------------------------------------
+// Notes:
+// - This is a front-end prototype. Replace `mockAnswer` with real API later.
+// - Uses Tailwind + shadcn/ui. All data is stored in local component state.
+// - Language: mostly Georgian (the user's preference), with some tech English where appropriate.
+
+// --- Mock knowledge base entries (you can edit/expand) ---
+const DEFAULT_KNOWLEDGE: KnowledgeItem[] = [
+  {
+    id: "k1",
+    tag: "Mercedes W211",
+    title: "Boost pressure too low — სწრაფი გზამკვლევი",
+    body: `
+განიხილე სამდაბოლოო ვაკუუმ-ხაზები, N75/N18 სოლენოიდის PWM, wastegate actuator-ის თავისუფალი სვლა. LiveData-ზე idle ~90-110 kPa, 2500 rpm-ზე 120-140 kPa (ატმოსფერული +). If MAP < expected: 
+1) ჰერმეტულობა (ჰაერის გაჟონვა), 
+2) ვაკუუმის დაბალი წნევა, 
+3) Actuator გაჭედილი, 
+4) სენსორის კალიბრი/გაძვრა.
+`
+  },
+  {
+    id: "k2",
+    tag: "Nissan Terrano",
+    title: "დიზელის სატუმბი ჰაერს იჭერს — ბუშტუკების დიაგნოსტიკა",
+    body: `
+თუ გამჭვირვალე შლანგში ბუშტუკები ჩანს და მუშაობა უცვლელია: სავარაუდოდ ჰაერი ბრუნავს დაბალი წნევის ნაწილში, მაგრამ მაღალი წნევის ნაწილი მუშაობს ნომინალურად. შეამოწმე: 
+• ფილტრის კორპუსის რეზინი/ორგინგი 
+• სწრაფი კავშირების კლიპები 
+• უკუმდინარე სარქველი 
+• ხელის ტუმბო (primer) 
+• fuel heater base ბზარები.
+`
+  },
+  {
+    id: "k3",
+    tag: "Subaru Legacy 2011",
+    title: "საბარგულის ღილაკი — კვების ტრასის შემოწმება",
+    body: `
+მუდმივი + და - თუ არის ღილაკთან, მაგრამ სიგნალი არ ბრუნდება BCM-მდე: 
+1) ღილაკის შიდა კონტაქტი 
+2) კონექტორის კოროზია 
+3) BCM-სთან LIN/CAN ხაზის წყვეტა 
+4) ქარხნული ფიუზი trunk release-ისთვის ხშირად შერწყმულია body fuse-თან (სქემა ნახე).
+`
+  }
+];
+
+// --- DTC quick hints (editable) ---
+const DTC_HINTS: Record<string, string> = {
+  P0299: "Turbo/Supercharger underboost — ვაკუუმი, wastegate, გაჟონვა, MAP/MAP hose.",
+  P0606: "ECU Processor fault — კვება/მიწა, ვიბრაცია, firmware corruption, სინჯე EEPROM/Flash.",
+  P0335: "Crankshaft position sensor — სიგნალი, ემისფერი, wiring shield, reluctor gap.",
+  U0100: "Lost comm with ECM/PCM — CAN-H/CAN-L, ტერმინატორი 120Ω, კვება BCM/ECM." ,
+};
+
+// Types
+type ChatMessage = { role: "user" | "assistant"; text: string; time: string };
+interface KnowledgeItem { id: string; title: string; body: string; tag?: string }
+
+// Utility
+const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const uid = () => Math.random().toString(36).slice(2);
+
+// Mock AI answerer — replace with your API call
+function mockAnswer(query: string, kb: KnowledgeItem[]): string {
+  const q = query.toLowerCase();
+  // 1) DTC match
+  const dtc = Object.keys(DTC_HINTS).find(code => q.includes(code.toLowerCase()));
+  if (dtc) return `💡 DTC ${dtc}: ${DTC_HINTS[dtc]}\n\n➡️ ნაბიჯები: 1) შეამოწმე კვება/მიწა; 2) ოსცილოსკოპით სიგნალი; 3) კონექტორის კოროზია; 4) საჭიროების შემთხვევაში პროგრამული რესტარტი.`;
+
+  // 2) Keyword to KB
+  const hit = kb.find(k => q.includes((k.tag||"").toLowerCase())) || kb.find(k => q.includes(k.title.split(" ")[0].toLowerCase()));
+  if (hit) return `📘 ${hit.title}\n\n${hit.body}`;
+
+  // 3) Generic diagnostic tree
+  return `ძმობილო, დავიწყოთ სწრაფი დიაგნოსტიკით:\n\n1) სიმპტომის ტიპი: გაჩერებაზე/მოძრაობაზე/ცივზე/ცხელზე?\n2) MIL და კოდები: რა კოდებია? Freeze Frame ნახე.\n3) კვება/მიწა: ფიუზები/რელეები, მიწის წერტილები.\n4) სენსორები: LiveData — რა შრება/რისკდება მოვლენამდე?\n5) ჰერმეტულობა: ვაკუუმი, ჰაერის/გამონაბოლქვის გაჟონვა.\n6) ტესტირება: ოსცილოსკოპი, აქტივაციები (actuator test).\n\nთუ გინდა, ჩამიწერე კოდები და LiveData — ერთად მოვჭიდებთ.`;
+}
+
+// Sidebar button component
+function SideBtn({ icon: Icon, label, onClick }: { icon: any; label: string; onClick?: () => void }) {
+  return (
+    <Button variant="ghost" className="w-full justify-start gap-2 rounded-xl" onClick={onClick}>
+      <Icon className="h-4 w-4" /> {label}
+    </Button>
+  );
+}
+
+// Tag pill
+function Tag({ children }: { children: React.ReactNode }) {
+  return <span className="text-xs px-2 py-1 rounded-full bg-muted/60">{children}</span>;
+}
+
+export default function GogaAIApp() {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: "assistant", time: now(), text: "გამარჯობა ძმობილო! მე ვარ GogaAI — მექანიკოსის ასისტენტი. რა შეგაწუხდა? 😊" },
+  ]);
+  const [input, setInput] = useState("");
+  const [knowledge, setKnowledge] = useState<KnowledgeItem[]>(DEFAULT_KNOWLEDGE);
+  const [filter, setFilter] = useState("");
+  const [dtc, setDtc] = useState("");
+  const [dtcNotes, setDtcNotes] = useState<string[]>([]);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  const filteredKB = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    if (!f) return knowledge;
+    return knowledge.filter(k => (k.title + " " + (k.tag||"") + " " + k.body).toLowerCase().includes(f));
+  }, [filter, knowledge]);
+
+  function sendMessage() {
+    const text = input.trim();
+    if (!text) return;
+    const userMsg: ChatMessage = { role: "user", text, time: now() };
+    const answer = mockAnswer(text, knowledge);
+    const aiMsg: ChatMessage = { role: "assistant", text: answer, time: now() };
+    setMessages(m => [...m, userMsg, aiMsg]);
+    setInput("");
+  }
+
+  function addKnowledgeSample() {
+    const id = uid();
+    const item: KnowledgeItem = {
+      id,
+      tag: "EEPROM",
+      title: "EEPROM dump შედარება — EWS/DME სინქრო",
+      body: `
+BMW E90 EWS3 <-> DME sync: წაიკითხე ორივე dump, შეადარე ISN/KEY ბაიტები. თუ mismatch: 
+• გააკეთე virgin DME ან EWS; 
+• ჩაწერე სწორი ISN; 
+• შეამოწმე CAS/EWS power & ground.\nკომენტარი: დენის ვარდნისას ხშირად ირღვევა სინქრო.`
+    };
+    setKnowledge(k => [item, ...k]);
+    toast.success("დაემატა EEPROM სახელმძღვანელო");
+  }
+
+  function removeKB(id: string) {
+    setKnowledge(k => k.filter(i => i.id !== id));
+  }
+
+  function onDtcAdd() {
+    const c = dtc.trim().toUpperCase();
+    if (!c) return;
+    const base = DTC_HINTS[c] || "ეს კოდი ბაზაში არ არის — დაამატე შენს ცოდნაში და შეინახე შენს სტილში.";
+    setDtcNotes(n => [`${c}: ${base}`, ...n]);
+    setDtc("");
+  }
+
+  return (
+    <div className="min-h-[100vh] w-full bg-gradient-to-br from-neutral-50 to-neutral-100">
+      {/* Top bar */}
+      <div className="sticky top-0 z-30 backdrop-blur bg-white/70 border-b">
+        <div className="container mx-auto p-3 flex items-center gap-3">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="flex items-center gap-2">
+            <div className="p-2 rounded-2xl bg-black text-white"><Bot className="h-5 w-5" /></div>
+            <div className="leading-tight">
+              <div className="font-bold text-lg">GogaAI</div>
+              <div className="text-xs text-muted-foreground">მექანიკოსის ასისტენტი • ECU • ESL • EEPROM • CAN</div>
+            </div>
+          </motion.div>
+          <div className="ml-auto flex items-center gap-2">
+            <Badge className="rounded-xl" variant="secondary"><Shield className="h-3 w-3 mr-1"/>Pro-მოდული შეუფერხებლად</Badge>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button size="sm" className="rounded-xl"><CloudUpload className="h-4 w-4 mr-1"/>ბაზის იმპორტი</Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-xl">
+                <DialogHeader>
+                  <DialogTitle>შენის ცოდნის იმპორტი (TXT/MD)</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">ჩააგდე შენს მიერ დაწერილი გზამკვლევები, კეისები, DTC ახსნა. ფაილები არ იგზავნება სერვერზე ამ MVP-ში — ინახება ბრაუზერში.</p>
+                  <Input type="file" multiple onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    files.forEach(async (f) => {
+                      const text = await f.text();
+                      setKnowledge(k => [{ id: uid(), title: f.name, body: text }, ...k]);
+                    });
+                    toast.success("ფაილები დაემატა ცოდნის ბაზას");
+                  }}/>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </div>
+      </div>
+
+      <div className="container mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 p-4">
+        {/* Sidebar */}
+        <aside className="md:col-span-3 space-y-3">
+          <Card className="rounded-2xl">
+            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Wrench className="h-4 w-4"/>სამუშაო პანელი</CardTitle></CardHeader>
+            <CardContent className="grid gap-1">
+              <SideBtn icon={Search} label="სწრაფი დიაგნოსტიკა" onClick={() => setMessages(m => [...m, { role: "assistant", time: now(), text: "აი სწრაფი ჩეკლისტი: 1) სიმპტომი 2) კოდები 3) კვება/მიწა 4) LiveData 5) ჰერმეტულობა 6) აქტივაციები" }])}/>
+              <SideBtn icon={CircuitBoard} label="ECU / Pinout რჩევები" onClick={addKnowledgeSample}/>
+              <SideBtn icon={Key} label="Immobilizer & ESL" onClick={() => setFilter("EEPROM")}/>
+              <SideBtn icon={Database} label="EEPROM Helper" onClick={() => toast.message("EEPROM მოდული (MVP) — დაამატე შენი dump-ები ცოდნის ბაზაში.")}/>
+              <SideBtn icon={FileText} label="ქეისების არქივი" onClick={() => setFilter("")}/>
+              <SideBtn icon={Settings} label="პარამეტრები" onClick={() => toast.info("პარამეტრები დაემატება Pro ვერსიაში")}/>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-2xl">
+            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Gauge className="h-4 w-4"/>DTC ქვე-გიდი</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex gap-2">
+                <Input placeholder="მაგ: P0299" value={dtc} onChange={(e) => setDtc(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onDtcAdd()} />
+                <Button onClick={onDtcAdd} className="rounded-xl"><PlusCircle className="h-4 w-4"/></Button>
+              </div>
+              <div className="space-y-2 max-h-52 overflow-auto pr-1">
+                {dtcNotes.length === 0 && (
+                  <p className="text-xs text-muted-foreground">ჩაწერე კოდი და მიიღე სწრაფი მინიშნებები. შენიშვნები შეინახება სესიის ფარგლებში.</p>
+                )}
+                {dtcNotes.map((n, i) => (
+                  <div key={i} className="text-xs p-2 bg-muted/50 rounded-xl flex items-start gap-2">
+                    <Badge variant="secondary" className="rounded-lg mt-0.5">DTC</Badge>
+                    <span className="leading-snug whitespace-pre-wrap">{n}</span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-2xl">
+            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><BookOpen className="h-4 w-4"/>ცოდნის ბაზა</CardTitle></CardHeader>
+            <CardContent className="space-y-2">
+              <Input placeholder="ძებნა… (მოდელი, DTC, სიტყვა)" value={filter} onChange={(e) => setFilter(e.target.value)} />
+              <div className="space-y-2 max-h-64 overflow-auto pr-1">
+                {filteredKB.map((k) => (
+                  <div key={k.id} className="p-2 rounded-xl bg-white border flex items-start gap-2">
+                    <div className="mt-1"><Info className="h-4 w-4"/></div>
+                    <div className="grow">
+                      <div className="text-sm font-medium flex items-center gap-2">{k.title} {k.tag && <Tag>{k.tag}</Tag>}</div>
+                      <div className="text-xs text-muted-foreground line-clamp-3">{k.body}</div>
+                    </div>
+                    <Button size="icon" variant="ghost" onClick={() => removeKB(k.id)} className="rounded-xl"><Trash2 className="h-4 w-4"/></Button>
+                  </div>
+                ))}
+                {filteredKB.length === 0 && (
+                  <div className="text-xs text-muted-foreground">ვერაფერს ვპოულობ. სცადე სხვა სიტყვა ან იმპორტი ზემოთ.</div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </aside>
+
+        {/* Main chat */}
+        <main className="md:col-span-9 space-y-3">
+          <Card className="rounded-2xl h-[72vh] flex flex-col">
+            <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Bot className="h-4 w-4"/>ჩატი • GogaAI</CardTitle></CardHeader>
+            <CardContent className="flex-1 overflow-auto space-y-3 pr-1">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${m.role === 'assistant' ? 'bg-white border' : 'bg-black text-white'}`}>
+                    <div className="text-[10px] opacity-60 mb-1">{m.role === 'assistant' ? 'GogaAI' : 'შენ'} • {m.time}</div>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              <div ref={endRef} />
+            </CardContent>
+            <div className="p-3 border-t flex gap-2">
+              <Textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="მიყევი სიმპტომს ან DTC-ს…" className="min-h-[44px] max-h-40" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }}} />
+              <Button onClick={sendMessage} className="rounded-2xl px-4"><Send className="h-4 w-4"/></Button>
+            </div>
+          </Card>
+
+          {/* Onboarding / value props */}
+          <Card className="rounded-2xl">
+            <CardContent className="p-4 grid md:grid-cols-3 gap-3">
+              <div className="p-3 rounded-2xl bg-white border">
+                <div className="flex items-center gap-2 font-semibold mb-1"><Sparkles className="h-4 w-4"/>რას აკეთებს GogaAI</div>
+                <p className="text-sm text-muted-foreground">სწრაფი დიაგნოსტიკა შენს სტილზე, რეალური ქეისებით, ქართულ ენაზე. ECU • ESL • EEPROM • CAN.</p>
+              </div>
+              <div className="p-3 rounded-2xl bg-white border">
+                <div className="flex items-center gap-2 font-semibold mb-1"><Lock className="h-4 w-4"/>შენი ცოდნა — შენი ბრენდი</div>
+                <p className="text-sm text-muted-foreground">იმპორტი TXT/MD ფაილიდან, შენს ბაზად იქცევა. არაფერი იგზავნება სერვერზე ამ MVP-ში.</p>
+              </div>
+              <div className="p-3 rounded-2xl bg-white border">
+                <div className="flex items-center gap-2 font-semibold mb-1"><Zap className="h-4 w-4"/>შემდეგი ნაბიჯები</div>
+                <p className="text-sm text-muted-foreground">დააკავშირე რეალურ LLM API-ს, დაამატე მომხმარებლების ავტორიზაცია და საფასო გეგმა (10–20 ლარი/თვეში).</p>
+              </div>
+            </CardContent>
+          </Card>
+        </main>
+      </div>
+
+      <footer className="container mx-auto p-6 text-xs text-muted-foreground flex items-center justify-between">
+        <div className="flex items-center gap-2"><Car className="h-3 w-3"/> „ძმობილო“ რეჟიმი ჩართულია • Beta</div>
+        <div className="flex items-center gap-1">
+          <HelpCircle className="h-3 w-3"/> თუ რაღაც გაჭედა — დაწერე "help" ჩატში.
+        </div>
+      </footer>
+    </div>
+  );
+}
